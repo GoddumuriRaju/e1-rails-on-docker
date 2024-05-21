@@ -1,0 +1,106 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: build-and-push-pipeline
+  namespace: default
+spec:
+  tasks:
+    - name: git-clone
+      taskRef:
+        name: git-clone
+        kind: ClusterTask
+      params:
+        - name: url
+          value: https://github.com/your-username/your-repo.git
+        - name: revision
+          value: main
+      workspaces:
+        - name: output
+          workspace: shared-workspace
+
+    - name: build-and-push
+      taskRef:
+        name: buildah
+        kind: ClusterTask
+      runAfter:
+        - git-clone
+      params:
+        - name: IMAGE
+          value: docker.io/your-dockerhub-username/note-app:latest
+        - name: CONTEXT
+          value: $(workspaces.shared-workspace.path)/your-repo
+      workspaces:
+        - name: source
+          workspace: shared-workspace
+
+  workspaces:
+    - name: shared-workspace
+
+---
+
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  name: build-and-push-pipeline-run
+  namespace: default
+spec:
+  pipelineRef:
+    name: build-and-push-pipeline
+  workspaces:
+    - name: shared-workspace
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi
+
+---
+
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: buildah
+  namespace: default
+spec:
+  params:
+    - name: IMAGE
+      type: string
+    - name: CONTEXT
+      type: string
+  steps:
+    - name: build
+      image: quay.io/buildah/stable
+      script: |
+        #!/usr/bin/env bash
+        buildah bud --layers -t $(params.IMAGE) $(params.CONTEXT)
+    - name: push
+      image: quay.io/buildah/stable
+      script: |
+        #!/usr/bin/env bash
+        buildah push $(params.IMAGE) --tls-verify=false
+
+---
+
+apiVersion: tekton.dev/v1beta1
+kind: ClusterTask
+metadata:
+  name: git-clone
+  namespace: default
+spec:
+  params:
+    - name: url
+      type: string
+    - name: revision
+      type: string
+  workspaces:
+    - name: output
+  steps:
+    - name: clone
+      image: alpine/git
+      script: |
+        #!/bin/sh
+        git clone $(params.url) $(workspaces.output.path)/source
+        cd $(workspaces.output.path)/source
+        git checkout $(params.revision)
